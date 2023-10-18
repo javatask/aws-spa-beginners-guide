@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Static contents distribution using S3 and CloudFront.
+
+Parameters:
+  APIEndpoint:
+    Type: String
+    Description: The API endpoint to be used by the application, example xxxxxxx.execute-api.eu-central-1.amazonaws.com
+  APIEndpointStage:
+    Type: String
+    Description: The API endpoint stage name
+    Default: production
+
+Resources:
+  # S3 bucket contains static contents
+  AssetsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration: 
+          - ServerSideEncryptionByDefault: 
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration: 
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogBucket
+        LogFilePrefix: origin/
+
+  # S3 bucket policy to allow access from CloudFront OAI
+  AssetsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AssetsBucket
+      PolicyDocument:
+        Statement:
+        - Action: s3:GetObject
+          Effect: Allow
+          Resource: !Sub ${AssetsBucket.Arn}/*
+          Principal:
+            Service: cloudfront.amazonaws.com
+          Condition:
+            StringEquals:
+              AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${AssetsDistribution}
+        - Effect: Deny
+          Principal: '*'
+          Action: 's3:*'
+          Resource: 
+            - !Sub ${AssetsBucket.Arn}/*
+            - !GetAtt AssetsBucket.Arn
+          Condition:
+            Bool: 
+              aws:SecureTransport: false
+
+  AccessLogBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-${AWS::AccountId}-logs'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration: 
+          - ServerSideEncryptionByDefault: 
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: Retain2yrs
+            Status: Enabled
+            ExpirationInDays: 730
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+      PublicAccessBlockConfiguration: 
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  AccessLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AccessLogBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: 
+              - !Sub ${AccessLogBucket.Arn}/*
+              - !GetAtt AccessLogBucket.Arn
+            Condition:
+              Bool: 
+                aws:SecureTransport: false
+
+  # CloudFront Distribution for contents delivery
+  AssetsDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+        - Id: S3Origin
+          DomainName: !GetAtt AssetsBucket.DomainName
+          S3OriginConfig:
+            OriginAccessIdentity: ''
+          OriginAccessControlId: !GetAtt CloudFrontOriginAccessControl.Id
+        - Id: APIBackend
+          DomainName: !Ref APIEndpoint
+          OriginPath: !Sub "/${APIEndpointStage}"
+          CustomOriginConfig:
+            OriginProtocolPolicy: https-only
+        Enabled: true
+        DefaultRootObject: index.html
+        Comment: !Sub ${AWS::StackName} distribution
+        DefaultCacheBehavior:
+          CachePolicyId: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+        CacheBehaviors:
+          - PathPattern: "/api/*"
+            AllowedMethods:
+            - GET
+            - POST
+            - PATCH
+            - PUT
+            - DELETE
+            - HEAD
+            - OPTIONS
+            TargetOriginId: APIBackend
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # AllViewerExceptHostHeader
+            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # SecurityHeadersPolicy
+            ViewerProtocolPolicy: redirect-to-https
+        HttpVersion: http2
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+        IPV6Enabled: false
+
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties: 
+      OriginAccessControlConfig:
+        Description: Default Origin Access Control
+        Name: !Ref AWS::StackName
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+Outputs:
+  BucketWithStaticAssets:
+    Value: !Ref AssetsBucket
+  URL:
+     Value: !Join [ "", [ "https://", !GetAtt AssetsDistribution.DomainName ]]

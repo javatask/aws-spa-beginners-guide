@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Creating EC2 instance for API Backend
+
+Parameters:
+  ContainerURI:
+    Type: String
+    Description: Container URI to launch
+  CognitoPoolArn:
+    Type: String
+    Description: Container URI to launch
+
+Resources:
+  # Api Gateway
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub ${AWS::StackName}-backend-proxy
+  ApiGatewayAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: !Sub ${AWS::StackName}-authorizer-backend-proxy
+      Type: COGNITO_USER_POOLS
+      IdentitySource: method.request.header.Authorization
+      RestApiId: !Ref ApiGatewayRestApi
+      ProviderARNs:
+        - !Ref CognitoPoolArn
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId:
+        !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: '{proxy+}'
+      RestApiId:
+        !Ref ApiGatewayRestApi
+  ApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: ANY
+      ResourceId:
+        !Ref ApiGatewayResource
+      RestApiId:
+        !Ref ApiGatewayRestApi
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !GetAtt ApiGatewayAuthorizer.AuthorizerId
+      RequestParameters:
+        method.request.path.proxy: true
+      Integration:
+        RequestParameters:
+          integration.request.path.proxy: method.request.path.proxy
+        Type: HTTP_PROXY
+        IntegrationHttpMethod: ANY
+        Uri: !Sub "http://${EC2Instance.PublicDnsName}:8080/{proxy}"
+  ApiGatewayDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    DependsOn:
+      - ApiGatewayMethod
+    Properties:
+      RestApiId:
+        !Ref ApiGatewayRestApi
+      StageName: production
+
+# VM backend
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-0e00e602389e469a3
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      KeyName: andriis
+      SecurityGroups:
+        - !Ref EC2SecurityGroup
+      Tags:
+        - Key: Name
+          Value: CloudFormation-EC2-Instance
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo dnf -y update
+          sudo dnf -y install docker
+          sudo systemctl start docker
+          sudo systemctl enable docker
+          aws ecr get-login-password --region ${AWS::Region} | sudo docker login --username AWS --password-stdin ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+          sudo docker pull ${ContainerURI}
+          sudo docker run -d -p 8080:8080 ${ContainerURI}
+
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+  EC2InstanceProfile: 
+    Type: "AWS::IAM::InstanceProfile"
+    Properties: 
+      Roles: 
+        - !Ref EC2Role
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow inbound HTTP traffic on port 8080
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+
+Outputs:
+  InstanceId:
+    Value: !Ref EC2Instance
+  ApiGatewayURL:
+    Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/production"
+  ApiGatewayDomain:
+    Value: !Sub "${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com"
+  ApiGatewayStage:
+    Value: "production"

@@ -1,0 +1,113 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Backend deployed viaAWS App Runner
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    Description: A name for the environment that this cloudformation will be part of.
+                 Used to locate other resources in the same environment.
+  ImageUrl:
+    Type: String
+    Description: The url of a docker image that contains the application process that
+                 will handle the traffic for this service. Should be on ECR private
+  ObservabilityConfigurationArnParam:
+    Type: String
+    Description: Create it via aws cli  aws apprunner create-observability-configuration --observability-configuration-name rest-api --trace-configuration Vendor=AWSXRAY
+
+Resources: 
+  # Backend
+  AppRunnerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2008-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - build.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+
+  Backend:
+    Type: AWS::AppRunner::Service
+    Properties:
+      ServiceName: !Sub ${AWS::StackName}-restapi-${Environment}
+      ObservabilityConfiguration:
+        ObservabilityEnabled: true
+        ObservabilityConfigurationArn: !Ref ObservabilityConfigurationArnParam
+      InstanceConfiguration:
+        Cpu: 0.25 vCPU
+        Memory: 0.5 GB
+      SourceConfiguration:
+        AuthenticationConfiguration:
+          AccessRoleArn: !GetAtt AppRunnerRole.Arn
+        ImageRepository:
+          ImageRepositoryType: ECR
+          ImageIdentifier: !Ref ImageUrl
+          ImageConfiguration:
+            Port: 8080
+      HealthCheckConfiguration:
+          HealthyThreshold: 1
+          Interval: 10
+          Path: /api/greeting
+          Protocol: HTTP
+          Timeout: 5
+          UnhealthyThreshold: 5
+      Tags:
+        - Key: environment
+          Value: !Ref Environment
+
+  # Api Gateway
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub ${AWS::StackName}-gateway-${Environment}
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId:
+        !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: '{proxy+}'
+      RestApiId:
+        !Ref ApiGatewayRestApi
+  ApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: ANY
+      ResourceId:
+        !Ref ApiGatewayResource
+      RestApiId:
+        !Ref ApiGatewayRestApi
+      AuthorizationType: NONE
+      RequestParameters:
+        method.request.path.proxy: true
+      Integration:
+        RequestParameters:
+          integration.request.path.proxy: method.request.path.proxy
+        Type: HTTP_PROXY
+        IntegrationHttpMethod: ANY
+        Uri: !Sub "https://${Backend.ServiceUrl}/{proxy}"
+  ApiGatewayDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    DependsOn:
+      - ApiGatewayMethod
+    Properties:
+      RestApiId:
+        !Ref ApiGatewayRestApi
+      StageName: !Ref Environment
+
+Outputs:
+  AppRunnerServiceArn:
+    Description: AppRunnerServiceArn
+    Value: !GetAtt Backend.ServiceArn
+  AppRunnerServiceId:
+    Description: AppRunnerServiceId
+    Value: !GetAtt Backend.ServiceId
+  AppRunnerServiceUrl:
+    Description: AppRunnerServiceUrl
+    Value: !GetAtt Backend.ServiceUrl
+  IntegrationAPI:
+    Description: URL For CDN
+    Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"

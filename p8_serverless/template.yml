@@ -1,0 +1,25 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Example Rest Api Serverless for Spring Boot 3
+
+Resources:
+  MyRestApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: com.example.restservice.GreetingLambdaHandler::handleRequest
+      Runtime: java17
+      CodeUri: .
+      MemorySize: 512
+      Policies: AWSLambdaBasicExecutionRole
+      Timeout: 60
+      Events:
+        HttpApiEvent:
+          Type: HttpApi
+          Properties:
+            TimeoutInMillis: 20000
+            PayloadFormatVersion: "2.0"
+
+Outputs:
+  RestApi:
+    Description: URL for application
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/api"

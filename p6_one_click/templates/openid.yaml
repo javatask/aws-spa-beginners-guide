@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Static contents distribution using S3 and CloudFront.
+
+Parameters:
+  CallbackUrl:
+    Type: String
+    Description: Callback URL for Cognito hosting UI, example https://111111.cloudfront.net/callback.html
+
+Resources:
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-user-pool"
+      MfaConfiguration: "OFF"
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+        UnusedAccountValidityDays: 90
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 6
+          RequireLowercase: false
+          RequireNumbers: false
+          RequireSymbols: false
+          RequireUppercase: false
+      Schema:
+        - Name: name
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: email
+          AttributeDataType: String
+          Mutable: false
+          Required: true
+      AliasAttributes:
+        - email
+        - preferred_username
+
+  CognitoUserDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub "${AWS::StackName}"
+      UserPoolId: !Ref CognitoUserPool
+  
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: UIClient
+      GenerateSecret: false
+      AllowedOAuthScopes:
+        - openid
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - !Ref CallbackUrl
+      DefaultRedirectURI: !Ref CallbackUrl
+      AllowedOAuthFlows: 
+        - code
+      SupportedIdentityProviders:
+        - COGNITO
+      UserPoolId: !Ref CognitoUserPool
+
+Outputs:
+  CognitoPoolArn:
+    Value: !GetAtt CognitoUserPool.Arn
+  CognitoPoolId:
+    Value: !Ref CognitoUserPool
+  OAuthClientId:
+    Value: !Ref CognitoUserPoolClient
